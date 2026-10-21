@@ -54,3 +54,29 @@ and `hasValue == false`. After the first emission it becomes `AsyncData` and
 `AsyncLoading(retrying: true)` rather than `AsyncError`, so the error arms in this
 lab would never match. `tickerProvider` sets `retry: (_, _) => null` to turn that
 off. Errors then surface as `AsyncError`, and the user retries with the Retry button.
+
+## Part 3 — Ticker UI with AsyncValue pattern matching
+
+**3.3 Breaking the switch on purpose.** With the `AsyncLoading()` arm commented
+out, `flutter analyze` reports:
+
+```
+error • The type 'AsyncValue<List<Tick>>' isn't exhaustively matched by the switch cases since it doesn't match the pattern 'AsyncLoading<List<Tick>>()'. Try adding a wildcard pattern or cases that match 'AsyncLoading<List<Tick>>()' • lib/ticker_page.dart:15:13 • non_exhaustive_switch_expression
+```
+
+`AsyncValue` is `sealed`, so the compiler knows the full list of subtypes and
+refuses to build a switch expression that misses one.
+
+**3.4 Matching on content.** I added `AsyncData(value: [])` (shows "No symbols
+subscribed") and `AsyncData(value: [final only])` (shows one centred `TickRow`).
+I checked both with throwaway widget tests that override the feed in
+`ProviderScope.overrides` with `TickFeed(symbols: const [])` and
+`TickFeed(symbols: const ['BTC'])`. A third throwaway test used
+`TickFeed(failAfter: 5)` and showed `Error: Feed disconnected`, so all three states
+can be reached.
+
+**Why must these arms come before the general `AsyncData` arm?**
+Switch arms are checked top to bottom and the first match wins.
+`AsyncData(:final value)` matches *every* `AsyncData`, empty and one-element lists
+included. If it came first, the specific arms could never run; the analyzer flags
+them as unreachable, and they'd be dead code.
