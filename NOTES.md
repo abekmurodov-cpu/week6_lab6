@@ -78,5 +78,66 @@ can be reached.
 **Why must these arms come before the general `AsyncData` arm?**
 Switch arms are checked top to bottom and the first match wins.
 `AsyncData(:final value)` matches *every* `AsyncData`, empty and one-element lists
-included. If it came first, the specific arms could never run; the analyzer flags
-them as unreachable, and they'd be dead code.
+included. If it came first, the specific arms could never run. I tried it, and the analyzer
+reports:
+
+```
+warning • This case is covered by the previous cases. Try removing the case clause, or restructuring the preceding patterns • lib/ticker_page.dart:19:30 • unreachable_switch_case
+```
+
+## Part 4 — Errors, retry, and preserving previous data
+
+Two `IconButton`s in the `AppBar` set `failAfterProvider` to `5` (wifi-off icon)
+or back to `null` (wifi icon). `tickFeedProvider` watches `failAfterProvider`, so
+each toggle builds a new feed and restarts the stream.
+
+To see the states Riverpod 3.4.3 really emits, I logged them from a
+`ProviderContainer`:
+
+| Action | State emitted |
+| --- | --- |
+| cold start | `AsyncLoading` (hasValue=false) |
+| `ref.invalidate` / `ref.refresh` from data | `AsyncData` isLoading=true, **isRefreshing=true** |
+| `failAfterProvider` changed (a watched dependency) | `AsyncLoading` hasValue=true, **isReloading=true** |
+| feed throws after ticks | `AsyncError` hasValue=true |
+| Retry (`invalidate`) from that error | `AsyncError` isLoading=true, isRefreshing=true |
+
+Riverpod 3 keeps the previous subtype during a refresh, so a retry from an error
+is still an `AsyncError`, now with `isLoading: true`. In the lab's arm order the
+"error with stale data" arm catches it first. I kept that order, but the arm also
+destructures `isLoading`. While it's true, it shows a `LinearProgressIndicator` above
+the banner and disables Retry, so the user can see the reconnect. The "error with
+nothing to show" arm does the same with a small spinner in place of the button.
+
+**4.3 `refresh` vs `invalidate`.** In Riverpod 3 **both** keep the previous rows
+visible. Either way the provider rebuilds and the new state carries the old value
+(`AsyncData` with `isLoading: true`), so the
+`AsyncValue(:final value?, isLoading: true)` arm shows the rows under a thin
+progress bar. The difference is what `onRefresh` gets back:
+
+- `ref.refresh(tickerProvider.future)` invalidates the provider, reads it again
+  straight away, and returns the new `Future<List<Tick>>`. That future completes
+  with the first value of the restarted stream. `RefreshIndicator` awaits it, so
+  the pull spinner stays up until fresh prices arrive (about 800 ms here).
+- `ref.invalidate(tickerProvider)` returns `void`. It only marks the provider
+  dirty, and the rebuild happens later. `onRefresh` (`() async => ref.invalidate(...)`)
+  completes at once, so the pull spinner leaves while the reload is still running.
+  In a widget test it disappeared at about 500 ms while the progress bar kept going.
+
+I kept `refresh(...future)`, wrapped in a `try/catch`. If the refresh fails, or the
+provider is disposed mid-refresh, the future throws; the `AsyncError` arms already
+show that, so the exception doesn't need to go unhandled.
+
+**4.4 Reconnect vs first load.** The arms already handle it. The full-screen
+`AsyncLoading()` arm comes last, and every loading state that has a previous value
+is caught higher up: by the error arms (`AsyncError` + `isLoading`) or by
+`AsyncValue(:final value?, isLoading: true)`. A throwaway widget test checked the
+whole checkpoint: cold-start spinner → rows → toggle failure (progress bar, rows
+still visible, no full-screen spinner) → banner over rows at opacity 0.5 → Retry
+(banner + progress bar, no full-screen spinner) → live rows again, no banner.
+
+**`isRefreshing` vs `isReloading`:** `isRefreshing` means the provider was
+recomputed manually with `ref.refresh`/`ref.invalidate` while its dependencies
+stayed the same. `isReloading` means it was recomputed because something it
+`ref.watch`es changed (here, `failAfterProvider`). Both need a previous
+value or error.
