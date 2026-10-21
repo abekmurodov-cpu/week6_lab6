@@ -141,3 +141,73 @@ recomputed manually with `ref.refresh`/`ref.invalidate` while its dependencies
 stayed the same. `isReloading` means it was recomputed because something it
 `ref.watch`es changed (here, `failAfterProvider`). Both need a previous
 value or error.
+
+## Part 5 — Tests
+
+`flutter test` runs 7 tests and all pass: 2 provider tests and 5 widget tests.
+One widget test, `error after data shows banner over rows`, is exercise 5.3.
+Another, `cold load with the real feed shows spinner, then rows`, comes from Part 3.
+
+Two changes for Riverpod 3:
+- `starts loading, then emits data` now opens a `container.listen` before reading.
+  In Riverpod 3, `container.read` doesn't keep an `autoDispose` provider alive. The
+  provider was disposed during the feed's 800 ms delay and `.future` threw
+  `Bad state: ... disposed during loading state`.
+- `Override` is imported from `package:flutter_riverpod/misc.dart`, and
+  `StateProvider` from `package:flutter_riverpod/legacy.dart`, because those
+  types moved in 3.x.
+
+**5.3, the hard case.** A `StreamController<List<Tick>>` replaces the stream. The
+test adds `sample` and pumps (expects `BTC`, no banner), then calls `addError('boom')`
+and pumps again. It then finds a `MaterialBanner`, the `BTC` row, and the text
+`Feed error: boom`. That shows the previous value carries through `AsyncError`
+and the `AsyncError(:final error, :final value?)` arm renders it.
+
+## Checkpoint questions
+
+**1. Which three subtypes make `AsyncValue` sealed, and what does the analyzer report when a switch expression misses one?**
+`AsyncData`, `AsyncLoading` and `AsyncError`. If a switch expression leaves one out,
+you get the compile error `non_exhaustive_switch_expression`: *"The type
+'AsyncValue<List<Tick>>' isn't exhaustively matched by the switch cases since it
+doesn't match the pattern 'AsyncLoading<List<Tick>>()'"* (exact text in Part 3.3).
+
+**2. When does `AsyncError.value` carry a non-null value, and when is it null?**
+It's non-null when the provider emitted at least one value before failing. Riverpod
+copies the last value into the error state, for example when the stream ticks five
+times and then throws `FeedException`, or when a retry or refresh fails after data
+was shown. It's null when the provider fails before any value was emitted: the
+first load fails (`Stream.error('boom')`, `failAfter: 0`), or the provider is
+disposed and starts fresh.
+
+**3. What is the difference between `ref.refresh(provider)`, `ref.refresh(provider.future)` and `ref.invalidate(provider)`?**
+- `ref.invalidate(provider)` marks the provider dirty and returns `void`. It rebuilds
+  lazily, the next time it's read or listened to. If nobody listens, nothing runs.
+- `ref.refresh(provider)` is `invalidate` plus an immediate `read`. It rebuilds now
+  and returns the new state, here the `AsyncValue<List<Tick>>` (which still has
+  `isLoading: true`).
+- `ref.refresh(provider.future)` does the same but reads `.future`, so it returns a
+  `Future<List<Tick>>` that completes with the next value. That's why it fits
+  `RefreshIndicator.onRefresh`, which needs a `Future` and keeps spinning until it
+  completes.
+
+All three keep the previous value in the state during the rebuild, so the
+`isLoading` + `value?` arms keep the rows on screen.
+
+**4. Why does `AsyncValue(:final value?, isLoading: true)` need to sit above `AsyncData(:final value)`?**
+In Riverpod 3 a refresh keeps the subtype: refreshing data is still an
+`AsyncData`, just with `isLoading: true`. `AsyncData(:final value)` would match it
+too, and since the first matching arm wins, the progress bar arm would never run if
+it came second. The analyzer would flag it as `unreachable_switch_case` for
+`AsyncData` states. Specific arms (with guards) have to come before general ones.
+
+**5. One reason to prefer switch expressions over `.when(...)`, and one situation where `.when` is still convenient.**
+*Prefer switch:* patterns can go further than three callbacks. You can match on
+content (`AsyncData(value: [])`, `[final only]`), require old data (`:final value?`),
+combine properties (`isLoading: true`), and the compiler checks exhaustiveness and
+reachability. `.when` decides refresh behaviour for you through flags
+(`skipLoadingOnRefresh`, `skipError`...), which hides those cases.
+*`.when` is still handy* for a quick inline three-way split where you want the
+default "keep showing data while refreshing" behaviour. An example is a small
+`Text` inside a larger widget,
+`balance.when(data: (b) => Text('$b'), loading: () => const Text('…'), error: (e, _) => Text('$e'))`,
+where a full `switch` block would just be noise.
