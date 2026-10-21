@@ -124,7 +124,7 @@ progress bar. The difference is what `onRefresh` gets back:
   completes at once, so the pull spinner leaves while the reload is still running.
   In a widget test it disappeared at about 500 ms while the progress bar kept going.
 
-I kept `refresh(...future)`, wrapped in a `try/catch`. If the refresh fails, or the
+I kept `refresh(...future)` and attached an `onError` handler. If the refresh fails, or the
 provider is disposed mid-refresh, the future throws; the `AsyncError` arms already
 show that, so the exception doesn't need to go unhandled.
 

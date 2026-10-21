@@ -33,13 +33,10 @@ class TickerPage extends ConsumerWidget {
       body: RefreshIndicator(
         // refresh(...future) completes when the new data arrives, so the pull
         // indicator stays visible for the whole reload.
-        onRefresh: () async {
-          try {
-            await ref.refresh(tickerProvider.future);
-          } catch (_) {
+        onRefresh: () => ref
+            .refresh(tickerProvider.future)
             // A failed refresh is already rendered by the AsyncError arms below.
-          }
-        },
+            .then<void>((_) {}, onError: (Object _) {}),
         child: switch (ticks) {
           // Error with stale data: show rows dimmed, banner on top.
           // Retry from here yields AsyncError(isLoading: true) in Riverpod 3,
